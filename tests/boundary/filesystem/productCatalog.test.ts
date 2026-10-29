@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
-import { BYTE_ENTROPY_PROVIDER } from "../../../src/application/InvestigationProviders.js";
+import { BYTE_ENTROPY_PROVIDER } from "../../../src/domain/investigationProviders.js";
 import { SUPPORTED_CLIENT_DEFINITIONS } from "../../../src/application/SupportedClients.js";
 import { CLI_COMMAND_NAMES } from "../../../src/cliCommandNames.js";
 import { createCli } from "../../../src/cli.js";
@@ -128,9 +128,7 @@ describe("canonical CLI catalog", () => {
   it("uses the same primary command names as the actual Incur router", () => {
     const inventory = createCliInventory(createCli());
     expect(inventory.primary).toEqual([...CLI_COMMAND_NAMES].sort());
-    expect(inventory.aliases).toEqual([
-      { name: "compare-bundles", target: "compare" },
-    ]);
+    expect(inventory.aliases).toEqual([]);
   }, 30_000);
 
   it("describes every primary command argument and option", () => {

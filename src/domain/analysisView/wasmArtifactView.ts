@@ -17,7 +17,10 @@ import {
   completeWithinViewCoverage,
   pageViewCoverage,
 } from "./analysisViewCoverage.js";
-import { analysisTextPage } from "./analysisViewText.js";
+import {
+  analysisTextPage,
+  analysisTextPageItemSchema,
+} from "./analysisViewText.js";
 
 /** Source forms and text from completed WASM Evidence; this never executes a VM. */
 export const wasmViewRequestSchema = z.strictObject({
@@ -43,13 +46,15 @@ export const wasmViewItemSchema = z.union([
   wasmArtifactSchema.shape.candidates,
   wasmArtifactSchema.shape.glue,
   wasmArtifactSchema.shape.tool_profile,
-  z.strictObject({ text: z.string(), unit: z.literal("utf16-code-units") }),
+  analysisTextPageItemSchema,
 ]);
 
 /** Counts are observations of the completed producer, independent of runtime semantics. */
 export const wasmSummarySchema = z.strictObject({
   bytes: wasmArtifactSchema.shape.artifact.shape.bytes,
   validation: wasmArtifactSchema.shape.validation,
+  debug_name_metadata: wasmArtifactSchema.shape.debug_name_metadata,
+  custom_section_warnings: wasmArtifactSchema.shape.custom_section_warnings,
   available_counts: z.strictObject({
     sections: z.int().nonnegative(),
     imports: z.int().nonnegative(),
@@ -90,7 +95,6 @@ export const projectWasmArtifactView = (
       parent.subject == null
         ? null
         : {
-            path: parent.subject.local_path,
             sha256: parent.subject.digest.sha256,
             format: parent.subject.format,
           },
@@ -102,7 +106,7 @@ export const projectWasmArtifactView = (
           path: ["source", "subject"],
           reason: "invalid_value",
           message:
-            "WASM parent Evidence subject must identify the report's exact path and SHA-256.",
+            "WASM parent Evidence subject must identify the report's file format and SHA-256.",
         },
       ]),
     );
@@ -133,6 +137,8 @@ export const projectWasmArtifactView = (
       summary: {
         bytes: report.artifact.bytes,
         validation: report.validation,
+        debug_name_metadata: report.debug_name_metadata,
+        custom_section_warnings: report.custom_section_warnings,
         available_counts: {
           sections: report.sections.length,
           imports: report.imports.length,

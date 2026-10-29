@@ -177,7 +177,26 @@ const managedExceptionRegionSchema = z.object({
   try_length: z.int().min(0),
   handler_offset: z.int().min(0),
   handler_length: z.int().min(0),
-  class_token: managedMetadataTokenSchema.nullable(),
+  class_token: managedMetadataTokenSchema
+    .nullable()
+    .describe(
+      "Raw build-local catch type token; not a cross-artifact identity",
+    ),
+  /** Resolved from this artifact's own metadata; raw token remains build-local. */
+  class_type: z.string().nullable().default(null),
+  class_type_name_sha256: digestSchema
+    .nullable()
+    .default(null)
+    .describe(
+      "Nested nominal TypeDef/TypeRef name digest; assembly scope is compared separately and local tokens are not cross-artifact identities",
+    ),
+  class_type_identity_resolved: z
+    .boolean()
+    .nullable()
+    .default(null)
+    .describe(
+      "Whether this artifact's local token identifies the reported catch type; null when unexamined",
+    ),
   filter_offset: z.int().min(0).nullable(),
 });
 
@@ -209,6 +228,16 @@ const managedMethodBodySchema = z.object({
   max_stack: z.int().min(0).nullable(),
   init_locals: z.boolean().nullable(),
   local_var_sig_token: managedMetadataTokenSchema.nullable(),
+  local_var_signature: z
+    .object({
+      raw_sha256: digestSchema,
+      has_context_dependent_types: z.boolean(),
+    })
+    .nullable()
+    .default(null)
+    .describe(
+      "Validated LocalVarSig blob facts; null when absent or unrecorded. Named types, modifiers and generic variables require metadata or declaring context; equal raw digests do not establish their cross-artifact type identity.",
+    ),
   il_size: z.int().min(0),
   il_sha256: digestSchema
     .nullable()
@@ -334,6 +363,13 @@ const managedNativeImplementationSchema = z.object({
 
 const managedCallEdgeSchema = z.object({
   caller_token: managedMetadataTokenSchema,
+  il_offset: offsetSchema.nullable().default(null),
+  target_identity_sha256: digestSchema
+    .nullable()
+    .default(null)
+    .describe(
+      "Nominal declaring-type/name/signature digest; null when unresolved or unrecorded. Does not establish assembly or runtime binding.",
+    ),
   caller: z.string().nullable(),
   opcode: z.string(),
   target_token: managedMetadataTokenSchema,
@@ -349,6 +385,13 @@ const managedCallEdgeSchema = z.object({
 
 const managedFieldAccessSchema = z.object({
   method_token: managedMetadataTokenSchema,
+  il_offset: offsetSchema.nullable().default(null),
+  target_identity_sha256: digestSchema
+    .nullable()
+    .default(null)
+    .describe(
+      "Nominal declaring-type/name/signature digest; null when unresolved or unrecorded. Does not establish assembly or runtime binding.",
+    ),
   method: z.string().nullable(),
   opcode: z.string(),
   field_token: managedMetadataTokenSchema,
@@ -367,6 +410,7 @@ const managedParseIssueSchema = z.object({
     "invalid-stream",
     "missing-stream",
     "invalid-tables",
+    "unsupported-metadata",
     "invalid-row",
     "invalid-heap-index",
     "invalid-string",
@@ -470,14 +514,15 @@ export const managedArtifactInspectionSchema = z.object({
 /** Provider-neutral, execution-free metadata/signature/IL member inspection. */
 export const managedMemberInspectionSchema = z.object({
   signature_resolution: z
-    .literal("type-names-v1")
+    .enum(["type-names-v1", "type-names-v2"])
     .nullable()
     .default(null)
     .describe(
-      "Signature type-name resolution was examined, including unresolved operands; null means no attestation, including historical or capacity-limited Evidence.",
+      "Signature type-name resolution was examined, including unresolved operands; v2 also renders readable operand names, v1 retains raw operand text; null means no attestation, including historical or capacity-limited Evidence.",
     ),
   artifact: managedArtifactReferenceSchema,
   module: moduleIdentitySchema.nullable(),
+  assembly: assemblyIdentitySchema.nullable().default(null),
   metadata: managedMetadataSummarySchema,
   identity_scope: managedTokenIdentityScopeSchema,
   types: z.array(managedTypeSchema),
@@ -518,6 +563,17 @@ export const managedMemberInspectionSchema = z.object({
     })
     .nullable()
     .default(null),
+  method_rows: z
+    .object({
+      offset: z.int().nonnegative(),
+      count: z.int().nonnegative(),
+      total: z.int().nonnegative(),
+    })
+    .nullable()
+    .default(null)
+    .describe(
+      "Examined zero-based MethodDef row interval before declaring-type selection; null means the row scope was not recorded. Row coordinates are build-local and cannot prove cross-build member absence for a page.",
+    ),
   coverage: z.object({
     state: z.enum(["complete", "partial", "unavailable"]),
     issues: z.array(managedParseIssueSchema),

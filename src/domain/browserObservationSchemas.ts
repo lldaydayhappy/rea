@@ -1,8 +1,9 @@
 import { z } from "zod";
+import { utcDateTimeSchema } from "./offsetDateTime.js";
 
 import { browserCompletenessSchema } from "./browserCompleteness.js";
 import {
-  cdpDomNodeSchema,
+  cdpDomSnapshotSchema,
   cdpScriptSourceSchema,
   cdpScriptMetadataSchema,
 } from "./cdpObservationSchemas.js";
@@ -199,6 +200,10 @@ const browserCspSourceSchema = z.object({
 const browserLinkMetadataSchema = z.object({
   href: z.string().nullable(),
   destination_scope: z.enum(["approved", "outside_policy", "unsupported"]),
+  context_url: z.string().nullable().optional(),
+  context_scope: z
+    .enum(["approved", "outside_policy", "unsupported"])
+    .optional(),
   rel: z.array(z.string()),
   as: z.string().nullable(),
   type: z.string().nullable(),
@@ -262,16 +267,13 @@ export const webPageInspectionSchema = z.object({
   browser: browserVersionSchema,
   target: browserTargetSchema,
   capture_window: z.object({
-    started_at: z.iso.datetime(),
-    ended_at: z.iso.datetime(),
+    started_at: utcDateTimeSchema,
+    ended_at: utcDateTimeSchema,
     observation_ms: z.int().min(0),
   }),
   completeness: browserCompletenessSchema,
   frames: z.array(browserFrameSchema),
-  dom: z.object({
-    total_nodes: z.int().min(0),
-    nodes: z.array(cdpDomNodeSchema),
-  }),
+  dom: cdpDomSnapshotSchema,
   accessibility: z.object({
     total_nodes: z.int().min(0),
     text_capture: z.object({
@@ -289,12 +291,12 @@ export const webPageInspectionSchema = z.object({
   network: z.object({
     requests: z.array(browserNetworkRequestSchema),
     websocket_connections: z.array(browserWebSocketConnectionSchema),
-    coverage_started_at: z.iso.datetime(),
+    coverage_started_at: utcDateTimeSchema,
     prior_activity_available: z.literal(false),
   }),
   console: z.object({
     events: z.array(browserConsoleEventSchema),
-    coverage_started_at: z.iso.datetime(),
+    coverage_started_at: utcDateTimeSchema,
     prior_activity_available: z.literal(false),
   }),
   workers: z.array(browserWorkerSchema),
@@ -323,6 +325,12 @@ export const webPageInspectionSchema = z.object({
             .string()
             .regex(/^[a-f0-9]{64}$/u)
             .nullable(),
+          projection_version: z
+            .literal(2)
+            .optional()
+            .describe(
+              "IndexedDB schema projection including database version; absent on historical store-only fingerprints.",
+            ),
           complete: z.boolean(),
         }),
       )

@@ -1,8 +1,16 @@
 import { z } from "zod";
 import { AnalysisOutputError } from "../domain/analysisErrorCore.js";
-import { jsonValueSchema } from "../domain/jsonValue.js";
+import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
 import type { AndroidOperation } from "../domain/android/androidAnalysis.js";
-import { dexDescriptorSchema } from "../domain/android/androidAnalysis.js";
+import { dexStaticValueSchema } from "../domain/android/androidAnalysis.js";
+import {
+  dexDescriptorSchema,
+  dexTypeSchema,
+} from "../domain/android/dexTypes.js";
+import { androidNativeDeclarationsSchema } from "../domain/android/androidNativeDeclarations.js";
+
+/** Native-only raw DEX facts authored before decompiler deduplication. */
+export const jadxNativeDeclarationsSchema = androidNativeDeclarationsSchema;
 
 const count = z.int().nonnegative();
 /** Typed allocation failures authored before upstream erases the JVM exception. */
@@ -61,16 +69,27 @@ export const jadxAppSchema = z.object({
   target_sdk: z.string(),
   permissions: z.array(z.string()),
 });
-export const jadxClassPageSchema = z.object({
-  scope: z.literal("top_level"),
-  total_classes: count,
-  next_offset: count,
-  offset: count,
-  limit: count,
-  items: z.array(z.string()),
-});
+const jadxClassPageSchema = z
+  .object({
+    scope: z.literal("top_level"),
+    total_classes: count,
+    next_offset: count,
+    offset: count,
+    limit: count,
+    items: z.array(z.string()),
+  })
+  .catchall(jsonValueSchema);
+export type JadxClassPage = z.infer<typeof jadxClassPageSchema>;
+
+/** Validate a decoded page without dropping observed JSON members such as __proto__. */
+export const parseJadxClassPage = (value: JsonValue): JadxClassPage => {
+  jadxClassPageSchema.parse(value);
+  return value as JadxClassPage;
+};
+
 export const jadxClassSchema = z.object({
-  full_name: z.string(),
+  full_name: z.string().min(1),
+  raw_name: z.string().min(1),
   name: z.string(),
   method_count: count,
   field_count: count,
@@ -78,6 +97,7 @@ export const jadxClassSchema = z.object({
   methods: z.array(
     z.object({
       name: z.string(),
+      raw_name: z.string().min(1),
       signature: z.string(),
       dex_descriptor: dexDescriptorSchema,
       is_constructor: z.boolean(),
@@ -85,9 +105,18 @@ export const jadxClassSchema = z.object({
     }),
   ),
   fields: z.array(
-    z.object({ name: z.string(), type: z.string(), def_pos: z.int() }),
+    z.object({
+      name: z.string(),
+      raw_name: z.string().min(1),
+      type: z.string(),
+      dex_type: dexTypeSchema,
+      def_pos: z.int(),
+      dex_static_value: dexStaticValueSchema.optional(),
+    }),
   ),
   inner_classes: z.array(z.string()),
+  /** Original binary names, index-aligned with the display names above. */
+  inner_class_raw_names: z.array(z.string()),
 });
 export const jadxMethodSchema = z.object({
   class_name: z.string(),
@@ -131,28 +160,30 @@ export const jadxXrefsSchema = z.object({
     }),
   ),
 });
-const toolResponse = z.object({
-  content: z
-    .array(z.object({ type: z.literal("text"), text: z.string() }))
-    .length(1),
-  isError: z.boolean().optional(),
-});
+const toolResponse = z
+  .object({
+    content: z.tuple([
+      z
+        .object({ type: z.literal("text"), text: z.string() })
+        .catchall(jsonValueSchema),
+    ]),
+    isError: z.boolean().exactOptional(),
+  })
+  .catchall(jsonValueSchema);
 
 /** Parse the upstream text-only envelope, preserving errors at the producing boundary. */
 export const parseJadxEnvelope = (
-  response: unknown,
+  response: JsonValue,
   operation: AndroidOperation,
-): { text: string; failed: boolean } => {
+): z.infer<typeof toolResponse> => {
   const parsed = toolResponse.safeParse(response);
-  if (!parsed.success || parsed.data.content[0] === undefined)
+  if (!parsed.success)
     throw new AnalysisOutputError(
       operation,
       "JADX returned an unsupported MCP content envelope",
     );
-  return {
-    text: parsed.data.content[0].text,
-    failed: parsed.data.isError === true,
-  };
+  // The schema establishes the shape; its object copy would omit __proto__.
+  return response as z.infer<typeof toolResponse>;
 };
 
 /** Decode an upstream JSON text payload without trusting its contents. */
