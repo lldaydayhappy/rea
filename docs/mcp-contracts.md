@@ -278,6 +278,17 @@ to `/absolute/view-request.json`, then run
 `rea inspect-analysis-view /absolute/view-request.json --json`. This also reads
 pre-summary source records without changing their identity; no live provider is started.
 
+Unavailable or inapplicable native collections keep `items.rows: null` and
+report `coverage: {"status":"unavailable","examined":0,"total":null,"next_offset":null,"exhausted":false}`.
+This applies to unrecorded `native-load-image` checks/sections and inapplicable
+`native-context` result limitations. Their total is unknown; no continuation is
+offered. Stop paging that collection and inspect the returned unknowns rather
+than treating it as an observed empty set or retrying a null offset. Recorded
+empty collections, empty selections and offsets past the end retain numeric
+totals and exhausted page coverage. Clients upgrading from the earlier
+zero-total representation must handle the new `unavailable` status and nullable
+total; historical saved views remain valid.
+
 `procedure_address`, `procedure_callees`, `procedure_callers`,
 `resolve_containing_procedure` and `get_call_graph` also accept `detail: "summary"`
 (complete remains the default). The summary includes the first 64 recorded
@@ -385,6 +396,19 @@ keep caller-selected identity and reject duplicate creation.
 Duplicate creation is a nonretryable `invalid_request`; use the existing head
 or update it with its current `expected_revision`. A stale update remains a
 retryable `revision_conflict`.
+
+If automatic question publication fails after a workflow completes,
+`details.workflow_unknown_publication` identifies the Evidence and states
+whether its retention was confirmed. `created_questions` and
+`existing_questions` count processed question occurrences; duplicate questions
+may share an Unknown identity. `total_questions` counts string questions, and
+`next_question_index` is the zero-based position in the workflow's original
+`residual_unknowns` array where publication stopped. It is not a resume token.
+For a retained record on the same MCP connection, retrieve the Evidence by ID
+with `get_evidence_bundle` and inspect committed heads with `list_unknowns`.
+Unprocessed questions remain in the completed Evidence; they were not checked
+by this attempt and may already exist from earlier work. A one-shot invocation identifies session-only retention
+as `invocation-only` and carries the completed Evidence in its failure when available.
 
 When `record_unknown` or `update_unknown` commits but its complete reply exceeds
 the response budget, `details.reported_limits.committed_unknown` identifies the
@@ -658,12 +682,19 @@ refuses the summary before analysis. Further views use the returned
 `parent_evidence_id` through `inspect_analysis_view`, or a saved Evidence file or
 portable bundle, and never repeat decompilation.
 
+A null provider observation produces `status: "unavailable"` and
+`reason: "no_pseudocode"`; item limitations retain any provider explanation.
+This does not establish why pseudocode is absent or whether a retry would help.
+Operation failures and malformed non-null output remain `status: "error"`.
+The `failed` count includes both unavailable and error items. Existing retained
+records keep their original item statuses and error details.
+
 A `batch-decompile` view selects one `collection` and repeats the batch counts
 and provider identities:
 
 - `items`: rows in retained order with their original `index`, so duplicate
   selectors stay distinct. A row keeps the selector in `address`, its `procedure`
-  identity and `status`, plus `pseudocode_code_units` or its exact `error` and
+  identity and `status`, plus `pseudocode_code_units`, an unavailable `reason`, or its exact `error` and
   `limitations`. `where.indices`, `where.addresses`, `where.procedure_addresses`
   and `where.statuses` filter exactly and combine; an item with unknown identity
   never matches `procedure_addresses`. Omitted filters select all, and empty
@@ -672,11 +703,11 @@ and provider identities:
 - `pseudocode`: one `index`'s text in UTF-16 code-unit pages. `offset` and `limit`
   default to 0 and 16,384, and `coverage` measures that body. An offset inside a
   surrogate pair is refused, and a limit ending inside one stops before it. An
-  error item has no text and is refused with a pointer to `items`.
+  unavailable or error item has no text and is refused with a pointer to `items`.
 
 Page `coverage` counts the selection only: exhausting it establishes nothing
 about functions outside the batch. Evidence `limitations` aggregate every item's
-provider observations and are not attributed to one successful item; only error
+provider observations and are not attributed to one successful item; unavailable and error
 items keep their own. A page over the response budget offers a smaller selection
 from the same `source`: fewer rows, or one body's `pseudocode` pages when a single
 row does not fit. An inline source offers none, because the record cannot be
@@ -1563,6 +1594,49 @@ support for omitted historical values.
 `compare_artifacts` reports a metadata change when both storage values are
 known and differ. If only one value is known, storage comparison is unknown;
 when both are omitted, storage is not compared.
+
+<!-- BEGIN:compare-artifacts:compared-format-metadata-kinds -->
+
+`compare_artifacts` also compares the declarations in the `format_metadata`
+of UnityFS members (`unityfs-entry`), PyInstaller entries
+(`pyinstaller-entry`), Node SEA members (`node-sea-entry`),
+ESP image segments (`esp-image-segment`), DfuSe elements (`dfuse-element`),
+ESP flash partitions (`esp-flash-partition`) and FIT images (`fit-image`);
+each format's guide names the compared fields. A changed declaration is a
+metadata change, including when content is unavailable. A declaration that
+only one side records, or that the other side records as another kind, is
+unknown and adds a limitation. A field that either side could not read is
+unknown, and the other fields still compare. Other kinds are not compared:
+their fields record layout, come from the bytes of the artifact or its
+container or from caller options that identify the target, or repeat
+occurrence fields, except Godot PCK source paths, which
+[Godot PCK archives](godot-pck.md) explains.
+
+<!-- END:compare-artifacts:compared-format-metadata-kinds -->
+
+Every occurrence records `entry_kind`, `executable` and `encrypted`. A
+different entry kind, `encrypted` value or occurrence limitation text is a
+`metadata` difference, and a different `executable` value is an `executable`
+difference. A symlink's own permission bits never mark it `executable`,
+because running a symlink runs its target. When either side's content is
+unavailable, `compare_artifacts` lists the differences that it can still
+observe with `availability`, and the path compares `unknown` unless a
+declaration changed. REA does not read symlink targets or encrypted bytes,
+so a non-executable file that becomes a symlink compares `unknown` in
+`metadata` and `availability`, and so does a member that becomes encrypted.
+Declared sizes do not count without content: REA compares observed sizes.
+For a node-less metadata record with a compared declaration, only that
+declaration, these fields and any recorded ASAR storage decide the
+comparison, so a record that becomes encrypted compares `changed` in
+`metadata`. Such a record adds `availability` only when a declaration is
+unknown. REA does not compare the record's unread payload or its
+limitations, which describe the observation.
+
+When either side has no content, `compare_artifacts` also compares the
+occurrences' `declared_integrity` claims, which Godot PCK and ASAR readers
+record. Claims of one algorithm that differ add `metadata`. REA cannot verify
+them, so they do not make the path `changed`, and equal claims add nothing.
+With content on both sides, the observed bytes decide.
 
 POSIX letter-colon names such as `a:b` remain valid logical
 names; Windows extraction refuses names its filesystem cannot materialize.
