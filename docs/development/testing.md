@@ -186,6 +186,9 @@ the caller's reason. Keep focused boundary and lifecycle tests for those facts.
 operation names, schemas or types; display-only selection remains allowed.
 `rea/no-fixture-root-cleanup` follows `const` fixture-root aliases into teardown
 deletion; mutable bindings and mixed root arrays remain outside its scope.
+`rea/project-wait-deadline` resolves Vitest's `vi` and `expect` bindings,
+including aliases and namespace imports; a shadowed local or a fixture method
+with the same name is not reported.
 
 `rea/no-shared-module-mock` resolves Vitest import bindings before rejecting
 module mocks in projects without per-file isolation. The test-project definitions
@@ -315,6 +318,18 @@ child fails with its captured output. Pass `timeoutMs` only when the child's dea
 `// @module-tag long-running`. Assert elapsed time explicitly when speed is the
 behavior under test. Derive an explicit deadline only when a test must outlive
 an operation deadline whose diagnostics it checks.
+
+Waits follow the same policy; Vitest's one-second `expect.poll` and
+`vi.waitFor` defaults assume a host's speed. A wait may take as long as its
+test may run, less the reporting reserve: projects configure `expect.poll`
+that way, and `waitFor` from `tests/support/testWait.ts` replaces `vi.waitFor`.
+Fixture waits such as `awaitAcknowledgement` default to the same deadline.
+`expect.poll` keeps its project's budget in a `long-running` test, while
+`waitFor` follows the deadline the tag applies.
+`rea/project-wait-deadline` rejects `vi.waitFor` and explicit poll timeouts. When promptness is the behavior under test, such as
+cancellation that must preempt a slower production deadline, a wait timeout is
+not its oracle: order the condition before releasing the gate that would
+otherwise satisfy it, or compare elapsed time with the deadline it must beat.
 
 Keep capacity fixtures intact when diagnosing a test failure. For byte equality
 of large buffers, use `Buffer.equals` or `Buffer.compare`; a generic structural
@@ -1023,8 +1038,8 @@ partial diagnostics and preflights do not establish complete mutation outcomes
 or qualify the release revision for mutation coverage.
 
 Fast CI starts the source-only projects after classification, independently of
-build and static checks, and runs eight built-dependent shards after the build.
-Those nine test jobs still select every portable test. Full qualification keeps six
+build and static checks, and runs twelve built-dependent shards after the build.
+Those thirteen test jobs still select every portable test. Full qualification keeps six
 complete Vitest shards with coverage. Neither tier retries tests. Canonical
 project ownership lives in `scripts/lib/test-projects.mjs`, shared by Vitest,
 CI group execution, and development-test preparation. A test importing compiled
@@ -1130,8 +1145,8 @@ memory usage, or billing. Step names identify samples, not complete transfer
 costs. Its queue, execution, and failures are independent of the required gate
 and publication. CPU time and peak process-family memory are not measured by this API.
 
-The build job saves portable Turbo outputs across runs. Eight Linux real-system
-lanes reuse its current-run artifact; standalone dispatches restore the cross-run cache. The shared action
+The build job saves portable Turbo outputs across runs. Linux real-system lanes
+that pass `build_cache_artifact` reuse its current-run artifact; standalone dispatches restore the cross-run cache. The shared action
 derives its key from `test:prepare --dry=json` task hashes, runner OS and
 architecture, `.npmrc`, `.nvmrc`, and the lockfile; test-only changes can reuse compiled outputs. Every
 build and verification command still runs, so Turbo checks task inputs and
