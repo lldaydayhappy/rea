@@ -13,10 +13,9 @@ import {
   renderCliDocument,
 } from "./cliOutput.js";
 import {
-  compactPresentationForMcpInputSchemaProfile,
-  parseMcpInputSchemaProfile,
-} from "./config/mcpInputSchemaProfile.js";
-import { parseMcpOutputSchemaProfile } from "./config/mcpOutputSchemaProfile.js";
+  parseMcpOutputSchemaProfile,
+  resolveMcpOutputSchemaProfile,
+} from "./config/mcpOutputSchemaProfile.js";
 import { parseMcpToolFamilies } from "./config/mcpToolFamilies.js";
 import { parseMcpToolCatalogProfile } from "./config/mcpToolCatalogProfile.js";
 import {
@@ -25,6 +24,8 @@ import {
   progressiveCatalogIdentity,
 } from "./catalogDiscovery.js";
 import { contractsForToolFamilies } from "./contracts/toolFamilies.js";
+import { toolContract } from "./contracts/toolContracts.js";
+import { advertisedOutputJsonSchema } from "./contracts/toolSchemaMetadata.js";
 import { promptsForToolFamilies } from "./contracts/promptToolFamilyScope.js";
 import { err, ok } from "./domain/result.js";
 import { AnalysisError } from "./domain/analysisErrorBase.js";
@@ -270,18 +271,23 @@ const inspectProductionMcpSession = async (
     promptsRequest,
   ]);
   const sessionTool = tools.tools.find(({ name }) => name === "binary_session");
+  // The reply is checked against the canonical output contract, not the
+  // listing: the default output profile omits output schemas and `compact`
+  // widens them, so the listed schema cannot establish a valid reply.
+  const toolDefinition = {
+    ...(sessionTool ?? {
+      name: "binary_session",
+      inputSchema: { type: "object" as const },
+    }),
+    outputSchema: advertisedOutputJsonSchema(toolContract("binary_session")),
+  };
   // A scope without the session family cannot serve request flow at all;
   // every other case still probes the call so the report names the real cause.
   const requestFlow = expectation.expectedToolNames.includes("binary_session")
     ? await client
         .callTool(
           { name: "binary_session", arguments: {} },
-          {
-            ...requestOptions(deadline, signal),
-            ...(sessionTool === undefined
-              ? {}
-              : { toolDefinition: sessionTool }),
-          },
+          { ...requestOptions(deadline, signal), toolDefinition },
         )
         .then(ok, (cause: unknown) =>
           err({
@@ -600,9 +606,6 @@ const targetFreeEnvironment = (
 const doctorExpectationForEnvironment = (
   environment: Readonly<Record<string, string | undefined>>,
 ): DoctorCatalogExpectation => {
-  const inputProfile = parseMcpInputSchemaProfile(
-    environment.REA_MCP_INPUT_SCHEMA_PROFILE,
-  );
   const outputProfile = parseMcpOutputSchemaProfile(
     environment.REA_MCP_OUTPUT_SCHEMA_PROFILE,
   );
@@ -621,13 +624,10 @@ const doctorExpectationForEnvironment = (
   );
   const progressive = catalogProfile.ok && catalogProfile.value === "hot-cold";
   const catalog = createCatalogIdentity({
-    compactPresentation: compactPresentationForMcpInputSchemaProfile(
-      inputProfile.ok ? inputProfile.value : undefined,
-    ),
     contracts,
-    outputSchemaProfile: outputProfile.ok
-      ? (outputProfile.value ?? "full")
-      : "full",
+    outputSchemaProfile: resolveMcpOutputSchemaProfile(
+      outputProfile.ok ? outputProfile.value : undefined,
+    ),
     promptContracts,
   });
   return {

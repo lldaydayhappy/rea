@@ -208,6 +208,9 @@ const redactFailure = (
         ? {}
         : { systemCode: error.systemCode }),
       ...(retainedPath === undefined ? {} : { path: retainedPath }),
+      ...(error.detectedKind === undefined
+        ? {}
+        : { detectedKind: error.detectedKind }),
       ...(error.userMessage === undefined
         ? {}
         : { userMessage: text(error.userMessage) }),
@@ -256,7 +259,7 @@ const redactFailure = (
       error.operation,
       text(error.path),
       text(error.reason),
-      context,
+      { ...context, integrityCheck: error.integrityCheck },
     );
   if (error instanceof AnalysisInputError)
     return new AnalysisInputError(
@@ -328,6 +331,9 @@ const redactFailure = (
         ...context,
         ...resourceConstraintRecovery(error, text),
         ...(error.limit === undefined ? {} : { limit: error.limit }),
+        ...(error.requestSent === undefined
+          ? {}
+          : { requestSent: error.requestSent }),
       },
     );
   if (error instanceof ProviderCleanupError)

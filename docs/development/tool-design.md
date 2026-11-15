@@ -274,7 +274,13 @@ one entry for a raw failure: typed analysis errors pass through, command
 outcomes go to `classifyProviderOutcome`, selected-file failures go to the
 shared stable-artifact projections, and only what none of them recognises
 reaches the provider's `unclassified` report. A provider supplies a dialect,
-not a classifier. The `rea/provider-failure-classifier` lint rule keeps new
+not a classifier. A phase that armed its own deadline throws that deadline's
+timeout where it observes the abort; for a read its signal cancelled, it
+supplies the timeout as the dialect's `interruption`, so classification never
+rereads a cancellation's reason as a timeout. A provider whose cleanup report
+has its own shape supplies `readCleanup` or `commandCleanup`; otherwise the
+unresolved cleanup is attached to the reported failure. The
+`rea/provider-failure-classifier` lint rule keeps new
 `(cause: unknown) => AnalysisError` functions out of `src/` except in that
 owner; existing ones are counted in a baseline that may only shrink.
 
@@ -318,8 +324,8 @@ as evidence about the input. Readers report bounds failures at the read site;
 host error codes alone cannot distinguish a read from a write or allocation.
 `scripts/verify/architecture-guards.mjs` counts the remaining raw `Buffer` and
 `DataView` reads, plain `Error` throws in parser folders, plain `JSON.parse`
-of parser input, and direct `instanceof RangeError` checks against
-`scripts/verify/architecture-guard-baselines.json`. A
+of parser input, and direct `instanceof RangeError` checks against their
+per-guard baselines in `scripts/verify/baselines/`. A
 file may not exceed its count; after removing copies, run
 `node scripts/verify/architecture-guards.mjs --shrink-baselines`.
 
@@ -476,7 +482,7 @@ failed request's physical, cancellation and cleanup facts.
   confirmed release. CLI adapters should reuse
   [`finishAnalysisCommand`](https://github.com/morluto/rea/blob/main/src/cli/finishAnalysisCommand.ts) where its contract
   applies rather than duplicate close/finally handling. It projects
-  [`runOwned`](https://github.com/morluto/rea/blob/main/src/application/runOwned.ts),
+  [`runOwned`](https://github.com/morluto/rea/blob/main/src/providers/runOwned.ts),
   which owns this precedence for owned work: a recorded failure stays primary,
   cancellation before commit keeps the completed value as a partial
   observation, cancellation after commit keeps the value, and unconfirmed

@@ -1,4 +1,5 @@
 import { MAX_NODE_TIMER_DELAY_MS } from "../domain/analysisResourceLimits.js";
+import { HOST_PLATFORM } from "../platform/HostPlatform.js";
 import { processInspectionCancellationError } from "../providers/OwnedCommandCleanup.js";
 import { APKTOOL_PROVIDER_IDENTITY } from "./ApktoolProviderIdentity.js";
 import { countDecodedFiles } from "./ApktoolDecodedInventory.js";
@@ -55,9 +56,10 @@ import {
   OwnerCancellation,
   carriedReason,
 } from "../domain/analysisErrorCore.js";
-import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
+import { analysisErrorWithCleanupDependencies } from "../domain/analysisErrorCleanup.js";
 import { fixedAllowanceOptions } from "../domain/fixedAllowanceRemediation.js";
 import { err, ok, type Result } from "../domain/result.js";
+import { finalizedResult, runOwned } from "../providers/runOwned.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import {
@@ -310,12 +312,15 @@ export class ApktoolProvider {
     this.selectedEnvironment =
       options.environment === undefined
         ? undefined
-        : snapshotEnvironment(options.environment);
+        : snapshotEnvironment(options.environment, HOST_PLATFORM.platform);
     this.removeWorkspace = options.removeWorkspace;
   }
 
   private operationEnvironment(): Readonly<NodeJS.ProcessEnv> {
-    return this.selectedEnvironment ?? snapshotEnvironment(process.env);
+    return (
+      this.selectedEnvironment ??
+      snapshotEnvironment(process.env, HOST_PLATFORM.platform)
+    );
   }
 
   /** Probe the selected apktool launcher; decodes nothing. */
@@ -523,11 +528,7 @@ export class ApktoolProvider {
     if (first === undefined) return;
     throw failures.reduce(
       (primary, cleanup) =>
-        analysisErrorWithCleanupFailure(
-          primary,
-          cleanup,
-          "close",
-        ).bindCleanupDependencies([primary, cleanup]),
+        analysisErrorWithCleanupDependencies(primary, cleanup, "close"),
       first,
     );
   }
@@ -735,11 +736,7 @@ export class ApktoolProvider {
         physical === cause && cause instanceof AnalysisError
           ? cause
           : failure.cleanupIncomplete
-            ? analysisErrorWithCleanupFailure(
-                primary,
-                failure,
-                operation,
-              ).bindCleanupDependencies([primary, failure])
+            ? analysisErrorWithCleanupDependencies(primary, failure, operation)
             : primary;
       if (
         completedDecode !== undefined &&
@@ -779,44 +776,31 @@ export class ApktoolProvider {
         });
       result = err(retained);
     }
-    const released = await this.#artifacts.release(owner);
-    const observation =
-      result.ok && (released.kind === "failed" || signal?.aborted === true)
-        ? createAnalysisExecutionEvidence(
+    const completed = result;
+    return finalizedResult(
+      await runOwned(async () => completed, {
+        providerId: "apktool",
+        operation,
+        signal,
+        close: async () => {
+          const released = await this.#artifacts.release(owner);
+          if (released.kind === "failed")
+            throw new ProviderCleanupError(
+              "apktool",
+              [root],
+              {},
+              { operation, cause: released.cause },
+            );
+        },
+        cleanupLeases: [lease],
+        partial: (execution) =>
+          createAnalysisExecutionEvidence(
             operation,
             input,
-            result.value,
+            execution,
             "observed",
-          )
-        : undefined;
-    if (result.ok && signal?.aborted)
-      result = err(
-        cancelledBy(operation, signal, { partialObservation: observation }),
-      );
-    if (released.kind === "failed") {
-      const cleanup = new ProviderCleanupError(
-        "apktool",
-        [root],
-        {},
-        {
-          operation,
-          cause: released.cause,
-          ...(observation === undefined
-            ? {}
-            : { partialObservation: observation }),
-        },
-      );
-      new AnalysisCleanupLeaseGroup(cleanup, [lease]);
-      return err(
-        result.ok
-          ? cleanup
-          : analysisErrorWithCleanupFailure(
-              result.error,
-              cleanup,
-              operation,
-            ).bindCleanupDependencies([result.error, cleanup]),
-      );
-    }
-    return result;
+          ),
+      }),
+    );
   }
 }

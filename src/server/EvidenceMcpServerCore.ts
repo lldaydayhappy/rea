@@ -29,15 +29,18 @@ import {
 
 import { analysisErrorProjectionSchema } from "../contracts/errorSchemas.js";
 import { transportClosedByOwner } from "./transportOwnerClose.js";
+import type { CompactInputSchemaPresentation } from "../contracts/compactInputSchema.js";
 import {
-  presentAdvertisedInputSchema,
-  type CompactInputSchemaPresentation,
-} from "../contracts/compactInputSchema.js";
-import { presentAdvertisedOutputSchema } from "../contracts/compactOutputSchema.js";
+  advertiseToolInput,
+  advertiseToolOutput,
+  type AdvertisedToolPresentation,
+} from "../contracts/advertisedTool.js";
 import {
-  compactPresentationForMcpOutputSchemaProfile,
+  advertisedToolPresentation,
+  resolveMcpOutputSchemaProfile,
   type McpOutputSchemaProfile,
 } from "../config/mcpOutputSchemaProfile.js";
+import { COMPACT_INPUT_SCHEMA_PRESENTATION } from "../config/mcpInputSchemaProfile.js";
 import type { createCatalogIdentity } from "../catalogIdentity.js";
 import { transformAdvertisedInputJsonSchema } from "../contracts/toolSchemaMetadata.js";
 import type { EvidenceWriter } from "../application/investigation/InvestigationRecordPort.js";
@@ -232,46 +235,31 @@ const replaceToolResultPayload = (
 
 /**
  * Rewrite only client-facing output schemas; SDK registrations stay canonical.
- * `compact` bounds each advertised schema, while `off` omits it entirely.
- * The SDK memoises each tool's converted schema, so the caller passes a cache
- * keyed by that object; repeated listings reuse the same projection.
+ * The presentation bounds each advertised schema or omits it entirely.
  */
 const presentOutputSchemasForToolsList = (
   message: JSONRPCMessage,
   requestId: RequestId,
-  profile: McpOutputSchemaProfile,
-  compactedSchemas: WeakMap<Record<string, unknown>, Record<string, unknown>>,
+  presentation: AdvertisedToolPresentation["output"],
 ): JSONRPCMessage => {
   if (
-    profile === "full" ||
     !isJSONRPCResultResponse(message) ||
     message.id !== requestId ||
     !isRecord(message.result) ||
     !Array.isArray(message.result.tools)
   )
     return message;
-  const compactPresentation =
-    compactPresentationForMcpOutputSchemaProfile(profile);
   return {
     ...message,
     result: {
       ...message.result,
       tools: message.result.tools.map((tool: unknown) => {
-        if (!isRecord(tool)) return tool;
-        if (compactPresentation === undefined) {
-          const { outputSchema: _outputSchema, ...advertisedTool } = tool;
-          return advertisedTool;
-        }
-        if (!isRecord(tool.outputSchema)) return tool;
-        let outputSchema = compactedSchemas.get(tool.outputSchema);
-        if (outputSchema === undefined) {
-          outputSchema = presentAdvertisedOutputSchema(
-            tool.outputSchema,
-            compactPresentation,
-          );
-          compactedSchemas.set(tool.outputSchema, outputSchema);
-        }
-        return { ...tool, outputSchema };
+        if (!isRecord(tool) || !isRecord(tool.outputSchema)) return tool;
+        const { outputSchema: canonical, ...advertisedTool } = tool;
+        const outputSchema = advertiseToolOutput(canonical, presentation);
+        return outputSchema === undefined
+          ? advertisedTool
+          : { ...advertisedTool, outputSchema };
       }),
     },
   } as JSONRPCMessage;
@@ -346,11 +334,16 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
     this.progressiveCatalog = catalog;
     const { name, ...config } = DISCOVER_TOOLS;
     // Transport discovery has no target or analysis lifecycle. Domain tools
-    // continue through registerTool and their original named handlers.
-    super.registerTool(name, config, (input, context) => {
-      context.mcpReq.signal.throwIfAborted();
-      return catalog.discover(input);
-    });
+    // continue through registerTool and their original named handlers. Its
+    // advertisement still follows the selected input presentation.
+    super.registerTool(
+      name,
+      { ...config, ...this.presentInput(name, config) },
+      (input, context) => {
+        context.mcpReq.signal.throwIfAborted();
+        return catalog.discover(input);
+      },
+    );
   }
 
   override sendToolListChanged(): void {
@@ -389,9 +382,7 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
   ): RegisteredPrompt {
     return super.registerPrompt(name, config, callback);
   }
-  private readonly compactPresentation:
-    | CompactInputSchemaPresentation
-    | undefined;
+  private readonly presentation: AdvertisedToolPresentation;
   private readonly maximumInputElements: number;
   private readonly evidenceReferenceAlternatives = new Set<string>();
 
@@ -404,8 +395,10 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
     options: McpServerOptions,
     private recordEvidence: EvidenceWriter["recordEvidence"] | undefined,
     public delivery: ToolResultDelivery,
-    compactPresentation: CompactInputSchemaPresentation | undefined = undefined,
-    private readonly outputSchemaProfile: McpOutputSchemaProfile = "full",
+    compactPresentation: CompactInputSchemaPresentation = COMPACT_INPUT_SCHEMA_PRESENTATION,
+    outputSchemaProfile: McpOutputSchemaProfile = resolveMcpOutputSchemaProfile(
+      undefined,
+    ),
     identity?: ReturnType<typeof createCatalogIdentity>,
     readonly advertisedToolFamilies:
       | ReadonlySet<string>
@@ -415,10 +408,10 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
       options.maxToolInputElements ?? DEFAULT_MCP_MAX_INPUT_ELEMENTS;
     super(info, { ...options, maxToolInputElements: maximumInputElements });
     this.maximumInputElements = maximumInputElements;
-    this.compactPresentation =
-      compactPresentation === undefined
-        ? undefined
-        : { budgetBytes: compactPresentation.budgetBytes };
+    this.presentation = advertisedToolPresentation(
+      outputSchemaProfile,
+      compactPresentation,
+    );
     this.identity = identity;
   }
 
@@ -448,30 +441,21 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
   ): RegisteredTool {
     if (canReferenceInlineEvidence(config.inputSchema))
       this.registerEvidenceReferenceAlternative(name);
-    const budget = this.compactPresentation?.budgetBytes;
-    const inputSchema =
-      budget !== undefined &&
-      config !== undefined &&
-      hasAdvertisedInputJsonSchema(config.inputSchema)
-        ? transformAdvertisedInputJsonSchema(
-            config.inputSchema as Parameters<
-              typeof transformAdvertisedInputJsonSchema
-            >[0],
-            (projected) =>
-              presentAdvertisedInputSchema(projected, { budgetBytes: budget }),
-          )
-        : undefined;
-    const presentedSchema = inputSchema ?? config.inputSchema;
-    const registeredConfig =
-      presentedSchema === undefined
-        ? config
+    const presented = this.presentInput(name, config);
+    const registeredConfig = {
+      ...config,
+      ...(presented.description === undefined
+        ? {}
+        : { description: presented.description }),
+      ...(presented.inputSchema === undefined
+        ? {}
         : {
-            ...config,
             inputSchema: captureInputValidation(
               name,
-              presentedSchema as StandardSchemaWithJSON,
+              presented.inputSchema as StandardSchemaWithJSON,
             ),
-          };
+          }),
+    };
     const scoped = async (input: never, context: never) => {
       const request = currentMcpToolRequest();
       request?.beginHandler();
@@ -514,6 +498,50 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
     return registered;
   }
 
+  /**
+   * The input schema and tool description this server advertises for one
+   * registration: the compact presentation, whose guidance joins the
+   * description. A registration without an input schema is unchanged. Every
+   * listed tool, including
+   * transport discovery, takes this one path.
+   */
+  private presentInput<Schema>(
+    name: string,
+    config: { readonly description?: string; readonly inputSchema?: Schema },
+  ): { description?: string; inputSchema?: Schema } {
+    const { description, inputSchema } = config;
+    const { input } = this.presentation;
+    if (inputSchema === undefined || !hasAdvertisedInputJsonSchema(inputSchema))
+      return config;
+    return {
+      ...this.describeTool(name, () => {
+        const projected = (inputSchema as StandardSchemaWithJSON)[
+          "~standard"
+        ].jsonSchema.input({ target: "draft-2020-12" });
+        return isRecord(projected)
+          ? advertiseToolInput(description, projected, input).description
+          : description;
+      }),
+      inputSchema: transformAdvertisedInputJsonSchema(
+        inputSchema,
+        (projected) =>
+          advertiseToolInput(description, projected, input).inputSchema,
+      ),
+    };
+  }
+
+  /**
+   * The listed description: guidance the compact input schema omits follows
+   * the registered description. Reading it projects the schema.
+   */
+  protected describeTool(
+    _name: string,
+    advertised: () => string | undefined,
+  ): { description?: string } {
+    const described = advertised();
+    return described === undefined ? {} : { description: described };
+  }
+
   /** Whether this process advertises one named operation. */
   advertisesTool(_name: string): boolean {
     return true;
@@ -552,7 +580,7 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
         () => this.recordEvidence,
         () => this.delivery,
         () => this.withAdmittedAnalysis,
-        this.outputSchemaProfile,
+        this.presentation.output,
         this.maximumInputElements,
         this.evidenceReferenceAlternatives,
       ),
@@ -579,12 +607,6 @@ class ErrorEvidenceTransport implements Transport {
     return this.currentDelivery();
   }
 
-  /** Bounded projections already computed for this server's budget. */
-  private readonly compactedOutputSchemas = new WeakMap<
-    Record<string, unknown>,
-    Record<string, unknown>
-  >();
-
   constructor(
     private readonly transport: Transport,
     private readonly currentEvidenceWriter: () =>
@@ -592,7 +614,7 @@ class ErrorEvidenceTransport implements Transport {
       | undefined,
     private readonly currentDelivery: () => ToolResultDelivery,
     private readonly currentAdmission: () => WithAdmittedAnalysis | undefined,
-    private readonly outputSchemaProfile: McpOutputSchemaProfile,
+    private readonly outputPresentation: AdvertisedToolPresentation["output"],
     private readonly maximumInputElements: number,
     private readonly evidenceReferenceAlternatives: ReadonlySet<string>,
   ) {
@@ -741,9 +763,7 @@ class ErrorEvidenceTransport implements Transport {
         : (this.pendingValidation.get(id) ??
           (scopedRequest?.id === id ? scopedRequest : undefined));
     const rewritesOutputSchemas =
-      this.outputSchemaProfile !== "full" &&
-      id !== undefined &&
-      this.pendingToolLists.has(id);
+      id !== undefined && this.pendingToolLists.has(id);
     try {
       const publish = async (): Promise<void> => {
         const recovered = this.recoverProtocolError(message, tool);
@@ -751,8 +771,7 @@ class ErrorEvidenceTransport implements Transport {
           ? presentOutputSchemasForToolsList(
               recovered,
               id,
-              this.outputSchemaProfile,
-              this.compactedOutputSchemas,
+              this.outputPresentation,
             )
           : recovered;
         await this.publish(advertised, tool, options, request);
