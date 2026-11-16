@@ -15,7 +15,7 @@ import type { JsonValue } from "../../../src/domain/jsonValue.js";
 import type { RecordUnknownInput } from "../../../src/domain/residualUnknown.js";
 import { createAnalysisProfile } from "../../../src/domain/analysisProfile.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
-import { HopperStartError } from "../../../src/domain/hopperErrors.js";
+import { HopperStartError } from "../../../src/hopper/HopperErrors.js";
 import { ProviderAdapterError } from "../../../src/domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../../../src/domain/providerCleanupError.js";
 import { AnalysisCleanupLease } from "../../../src/resources/AnalysisCleanupLease.js";
@@ -782,7 +782,7 @@ describe("Evidence display metadata refresh", () => {
         const refreshed = session.exportAnalysisSnapshot();
         if (!refreshed.ok) throw refreshed.error;
         if (scope === "active") {
-          expect(refreshed.value.entries[0]?.execution.subject?.path).toBe(
+          expect(refreshed.value.entries[0]?.execution.subject.local_path).toBe(
             relocated.subject.local_path,
           );
           expect(refreshed.value.evidence_bundle.records).toContainEqual(
@@ -986,8 +986,10 @@ describe("replay of exact immutable calls", () => {
       expect(projectAnalysisError(opened.error).details).toMatchObject({
         binding_mismatch: {
           target: {
-            snapshot: { sha256: snapshot.value.target.sha256 },
-            selected: { sha256: expect.any(String) },
+            snapshot: {
+              identity: { sha256: snapshot.value.target.identity.sha256 },
+            },
+            selected: { identity: { sha256: expect.any(String) } },
           },
         },
       });
